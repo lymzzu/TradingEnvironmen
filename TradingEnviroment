@@ -1,0 +1,260 @@
+import pandas as pd 
+import numpy as np 
+from gym import Env, spaces
+#TRANSACTION_COST = 0.001
+class TradingEnv(Env):
+    """Trading Environment follows gym from openai
+       parameters :
+           index_codes : a list of assets,
+           rolling_window : the lenght of feature,
+           feature_dim : the dim of feature,
+           step_size : the hold period,
+           cost_rate : commission charge,
+           trading  : trading with the opening price or closing price of the next day, default : 'close',
+           wealth : the original wealth of trading, default :10000,
+           start_date : the start date of backtesting,
+           end_date : the end date of backtesting,
+           
+       return :
+           obs : the feature of next trading period. shape =(len(index_codes), rolling_window, feature_dim)
+           reward : the net return rate of the trading period,
+           done : Whether the backtesting is over or not, Ture means end 
+           info : the useful information, you want to show, trading time, net_value
+           
+           
+    """
+    def __init__(self, index_codes, rolling_window_width=60, feature_dim=31, step_size=22,cost_rate=0.001,trading= 'close',wealth=10000, start_date=None, end_date=None): #该数据需要更改得地方
+        super(TradingEnv, self).__init__()
+        self.index_codes = index_codes
+        self.rolling_window_width = rolling_window_width
+        self.start_date = start_date
+        self.end_date = end_date
+        self.step_size = step_size
+        self.feature_dim = feature_dim  #Liyaoming 定义类的全局变量feature_dim
+        self.cost_rate = cost_rate
+        self.wealth =wealth
+        # init action bounds
+        action_low = np.array([0. for _ in range(len(index_codes))])
+        action_high = np.array([1. for _ in range(len(index_codes))])
+        # init obs bounds
+        obs_low = np.zeros(
+            shape=[len(index_codes), rolling_window_width, feature_dim]
+        )
+        obs_low.fill(-1e9)
+        obs_high = np.zeros(
+            shape=[len(index_codes), rolling_window_width, feature_dim]
+        )
+        obs_high.fill(1e9)
+        self.action_space = spaces.Box(
+            low=action_low,
+            high=action_high
+        ) 
+        self.observation_space = spaces.Box(
+            low=obs_low,
+            high=obs_high
+        )
+
+        self.market = Market(
+            index_codes, 
+            step_size=step_size, 
+            feature_dim=feature_dim,
+            rolling_window_width=rolling_window_width,
+            trading = trading,
+            start_date = start_date, 
+            end_date = end_date
+        )
+        self.portfolio = Portfolio(index_codes,self.wealth, self.cost_rate )
+
+    def reset(self):
+        obs = self.market.reset()
+        obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
+        obs[np.isnan(obs)]=0
+        return obs
+
+    def step(self, action):
+        # 1. take the action according to previous observation
+        # 2. get ret of this action (ret one step ahead)
+        # 3. return next_obs, utility(reward), is_done, info(current time in market)
+        obs, ret, is_done, info = self.market.step()
+        utility = self.portfolio.update(action, ret)
+        if type(obs) is np.ndarray:
+            obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
+            obs[np.isnan(obs)]=0
+            info['net_value'] = self.portfolio.net_value_history
+            info['wealth']= [self.portfolio.wealth*i for i in self.portfolio.net_value_history]
+            return obs, utility, is_done, info
+        else:
+            info['net_value'] = self.portfolio.net_value_history
+            info['wealth']= [self.portfolio.wealth*i for i in self.portfolio.net_value_history]
+            return  obs, utility, is_done, info
+    
+    
+    def render(self):
+        pass
+
+    def close(self):
+        pass
+
+class Portfolio(object):
+    """Portfolio object, record positions and some finance indicators
+    """
+
+    def __init__(self, index_codes, wealth, TRANSACTION_COST):#带Liyaoming self的都是类的全局变量
+       
+        self.index_codes = index_codes
+        self.positions = np.array([0.0 for _ in range(len(index_codes))])
+        self.cur_ret = 0
+        self.net_value = 1
+        self.net_value_history = [1]
+        self.wealth_history = [wealth]
+        self.wealth = wealth
+        self.TRANSACTION_COST = TRANSACTION_COST
+
+    def update(self, action, ret):#参数 ret =(价格变化每列表示所有资产) 
+        # compute weighted avg ret based on current position
+        #self.net_value = self.cash*np.sum(action)
+        if action[0]==-1:#不调仓
+            ret_ = ret[:,0].reshape(len(self.index_codes),1)*ret[:,1:]
+            weighted_ret = np.sum(self.positions.reshape(len(self.index_codes),1) * ret_,axis=0)# axis =0 列优先
+            net_value_ =  self.net_value* weighted_ret
+            self.cur_ret, self.net_value = net_value_[-1]-1, net_value_[-1]
+            self.net_value_history= self.net_value_history+list(net_value_)
+            if np.sum(self.positions)==0:
+                self.positions = np.array([0]*len(self.index_codes))
+            else:
+                self.positions = (self.positions*ret_)/np.sum(self.positions*ret_)# 调仓后最后一个交易日收盘时各类资产的权重
+            
+        else:
+            # compute total ret and net value
+            if isinstance(self.net_value,int): #第一次调仓
+                weighted_ret = np.sum(action.reshape(len(self.index_codes),1) * ret[:,1:],axis=0)#
+                cost = np.sum(np.abs(action-self.positions)*self.TRANSACTION_COST)
+                net_value_ = (self.net_value *(1- cost))* weighted_ret
+            
+            
+            else:
+                weighted_ret = np.sum(action.reshape(len(self.index_codes),1) * ret[:,1:],axis=0)#
+                value_before_change = self.net_value*np.sum(self.positions*ret[:,0]) #调仓前一刻的权重
+                if np.sum(self.positions)==0:
+                    cost =  np.sum(np.abs(action-self.positions)*self.TRANSACTION_COST)
+                else:
+                    cost = np.sum(np.abs(self.positions*ret[:,0]/np.sum(self.positions*ret[:,0])-action))*self.TRANSACTION_COST #调仓的费率
+                net_value_ = (value_before_change *(1- cost))* weighted_ret
+            if np.sum(action)==0:
+                self.positions = np.array([0]*len(self.index_codes))
+            else:
+                self.positions = (action*(ret[:,-1]))/np.sum(action*(ret[:,-1]))# 调仓后最后一个交易日收盘时各类资产的权重
+            self.cur_ret, self.net_value = net_value_[-1]-1, net_value_[-1]
+            self.net_value_history= self.net_value_history+list(net_value_)
+       
+        return self.net_value-1 #期间的累计收益率
+
+    def reset(self):
+        self.positions = np.array([0.0 for _ in range(len(self.name2id))])
+        self.indicators = {}
+        self.cur_ret = 0
+        self.net_value = 1
+        self.net_value_history = [1]
+        self.wealth = self.wealth_original  #liyaoming 初始化wealth 
+
+    
+class Market(object):
+    """Market object, used to load data and record date
+    """
+    def __init__(self, index_codes, step_size=22, feature_dim=31, rolling_window_width=60,trading = 'close', start_date=None, end_date=None):
+        assert isinstance(index_codes, list), "index_codes must be str or List[str]"
+        self.index_codes = index_codes
+        self.start_date = start_date
+        self.end_date = end_date
+        self.step_size = step_size
+        self.feature_dim = feature_dim
+        self.rolling_window_width = rolling_window_width
+        self.last_close = None
+        self.trading = trading
+        self.time =[]
+        # load data to df
+        self.dfs = []
+        for file_name in index_codes:
+            file_path = './data_new/{}.csv'.format(file_name) # 更改数据集需要改的地方
+            df = pd.read_csv(file_path, index_col=0, )
+            df.trade_date = df.trade_date.astype(str) #转成字符串
+            self.dfs.append(df)
+        
+        # get information needed
+        self.close_ind = np.where(df.columns=='CLOSE_INDEX')[0].item()-1 # the index of "close" in column
+        self.open_ind = np.where(df.columns=='OPEN_INDEX')[0].item()-1
+        self.time_span = df.shape[0] # total trading time
+        self.time_list = df.trade_date.tolist()
+        self.data = np.concatenate([df.iloc[:,1:].values.reshape(1, -1, self.feature_dim) for df in self.dfs])# 多加一个维度按行叠放
+        _ = self.reset() #李耀明 把变量塞到元组输出 
+    
+    def reset(self, start_date=None, end_date=None):#可以去中间一端时间。
+        if start_date is None: # set start timepoint of episode to start date
+            start_date = self.start_date
+        if end_date is None: # set end timepoint of episode to end date 
+            end_date = self.end_date
+        self.start_ind = np.where(self.dfs[0].trade_date==start_date)[0].item() # start of trajactory
+        self.end_ind = np.where(self.dfs[0].trade_date==end_date)[0].item() # end of trajactory
+        assert self.start_ind < self.end_ind, 'start date must be earlier than end date'
+
+        self.window_head = self.start_ind   #index
+        self.window_tail = self.window_head + self.rolling_window_width-1
+        self.last_close = self.data[:, self.window_tail, self.close_ind] #调仓前一日的收盘价
+        self.time=[self.time_list[self.window_tail]]
+        return self.data[:, self.window_head:self.window_tail+1, :]
+    
+    def step(self):
+        # update window
+        self.window_head += self.step_size
+        window_start= self.window_tail
+        self.window_tail += self.step_size
+        self.window_tail = min(self.window_tail, self.end_ind)
+        # calculate the ret
+        if self.trading == 'open':
+            this_open = self.data[:, window_start+1, self.open_ind].reshape(len(self.index_codes),1) #调仓日开盘价
+            ret1 = this_open/self.last_close.reshape(len(self.index_codes),1)
+            this_close = self.data[:,window_start+1:self.window_tail+1, self.close_ind] # 2020.4.3 收盘价往后取一天 Minghong Sun
+            ret2 = this_close/this_open
+            ret = np.concatenate((ret1,ret2),axis =1)
+        elif self.trading == 'close':
+            this_close_change = self.data[:, window_start+1, self.close_ind].reshape(len(self.index_codes),1)
+            ret1 = this_close_change/self.last_close.reshape(len(self.index_codes),1)
+            this_close = self.data[:,window_start+1:self.window_tail+1, self.close_ind]
+            ret2 = this_close/this_close_change
+            ret = np.concatenate((ret1,ret2),axis =1)
+        info = dict()
+        self.time = self.time+self.time_list[window_start+1:self.window_tail+1]
+        info['time'] = self.time
+        if self.window_tail >= self.end_ind:
+            is_done = True
+            return None , ret, is_done, info
+        else:
+            is_done = False
+        #obs_ = self.data[:, self.window_head-1:self.window_tail, :]
+        # get observation
+        obs = self.data[:, self.window_head:self.window_tail+1,:]# [self.open_ind,self.close_ind]
+        info['obs'] = obs
+               
+        # update close_price for next step
+        
+        self.last_close = self.data[:,self.window_tail, self.close_ind]# 持仓最后一天的收盘价
+        
+        return obs, ret, is_done, info
+if __name__ == '__main__':
+    index = ['AGG.P', 'ASHR.P']
+    env= TradingEnv(index,step_size=22, feature_dim=31, rolling_window_width=5,trading= 'close', start_date='2005-01-05', end_date='2016-12-30')
+    state = env.reset()#Liyaoming得到初始的状态变量
+    done = False
+    date = []
+    while done == False:
+    #for action in [np.array([1./2,1./2]), np.array([-1]),np.array([1./2,1./2])]:
+        #print(action)
+        action = np.array([1./2,1/2])
+        next_state, utility, done, info = env.step(action)
+        date_ = info['time']
+        state = next_state
+        #print(utility)
+    df = pd.DataFrame([info['time'], info['net_value']]).T
+    df.to_csv('test_price.csv')
+    print(df)
+    df.plot()
