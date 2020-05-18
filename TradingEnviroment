@@ -67,8 +67,8 @@ class TradingEnv(Env):
 
     def reset(self):
         obs = self.market.reset()
-        obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
-        obs[np.isnan(obs)]=0
+        #obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
+        #obs[np.isnan(obs)]=0
         return obs
 
     def step(self, action):
@@ -78,8 +78,8 @@ class TradingEnv(Env):
         obs, ret, is_done, info = self.market.step()
         utility = self.portfolio.update(action, ret)
         if type(obs) is np.ndarray:
-            obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
-            obs[np.isnan(obs)]=0
+            #obs = (obs-obs.mean(1).reshape(len(self.index_codes),1, self.feature_dim))/obs.std(1).reshape(len(self.index_codes),1,self.feature_dim) # liyoaming 2020-02-17 参数归一化
+            #obs[np.isnan(obs)]=0
             info['net_value'] = self.portfolio.net_value_history
             info['wealth']= [self.portfolio.wealth*i for i in self.portfolio.net_value_history]
             return obs, utility, is_done, info
@@ -182,7 +182,8 @@ class Market(object):
         
         # get information needed
         self.close_ind = np.where(df.columns=='CLOSE_INDEX')[0].item()-1 # the index of "close" in column
-        self.open_ind = np.where(df.columns=='OPEN_INDEX')[0].item()-1
+        if 'OPEN_INDEX' in df.columns:
+            self.open_ind = np.where(df.columns=='OPEN_INDEX')[0].item()-1
         self.time_span = df.shape[0] # total trading time
         self.time_list = df.trade_date.tolist()
         self.data = np.concatenate([df.iloc[:,1:].values.reshape(1, -1, self.feature_dim) for df in self.dfs])# 多加一个维度按行叠放
