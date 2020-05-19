@@ -144,10 +144,10 @@ class Portfolio(object):
                 self.positions = np.array([0]*len(self.index_codes))
             else:
                 self.positions = (action*(ret[:,-1]))/np.sum(action*(ret[:,-1]))# 调仓后最后一个交易日收盘时各类资产的权重
-            self.cur_ret, self.net_value = net_value_[-1]-1, net_value_[-1]
+            self.cur_ret, self.net_value = weighted_ret[-1]-1, net_value_[-1]
             self.net_value_history= self.net_value_history+list(net_value_)
        
-        return self.net_value-1 #期间的累计收益率
+        return self.cur_ret #期间的累计收益率
 
     def reset(self):
         self.positions = np.array([0.0 for _ in range(len(self.name2id))])
