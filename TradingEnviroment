@@ -117,7 +117,7 @@ class Portfolio(object):
             ret_ = ret[:,0].reshape(len(self.index_codes),1)*ret[:,1:]
             weighted_ret = np.sum(self.positions.reshape(len(self.index_codes),1) * ret_,axis=0)# axis =0 列优先
             net_value_ =  self.net_value* weighted_ret
-            self.cur_ret, self.net_value = net_value_[-1]-1, net_value_[-1]
+            self.cur_ret, self.net_value = weighted_ret[-1]-1, net_value_[-1]
             self.net_value_history= self.net_value_history+list(net_value_)
             if np.sum(self.positions)==0:
                 self.positions = np.array([0]*len(self.index_codes))
